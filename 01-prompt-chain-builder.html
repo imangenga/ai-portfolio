@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Prompt Chain Builder — AI Portfolio</title>
+<script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d0d14; color: #e2e8f0; min-height: 100vh; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #1a1a2e; } ::-webkit-scrollbar-thumb { background: #4a5568; border-radius: 3px; }
+  textarea, input { background: #1a1a2e; color: #e2e8f0; border: 1px solid #2d3748; border-radius: 6px; font-family: 'Consolas', monospace; font-size: 13px; }
+  textarea:focus, input:focus { outline: none; border-color: #6366f1; }
+  button { cursor: pointer; font-family: inherit; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useCallback, useEffect, useRef } = React;
+
+const PRESETS = {
+  "Customer Support Triage": {
+    variables: { product: "Cloudbase API", severity: "medium", user_message: "I can't authenticate to the API, getting 401 errors since yesterday" },
+    nodes: [
+      { id: 1, label: "Classify Intent", type: "classify", color: "#6366f1", template: `You are a support triage assistant for {{product}}.\n\nClassify the following user message into one of: [bug, billing, how-to, account, other]\nSeverity hint: {{severity}}\n\nMessage: "{{user_message}}"\n\nRespond with JSON: { "category": "...", "urgency": 1-5, "keywords": [...] }`, output: `{ "category": "bug", "urgency": 4, "keywords": ["authenticate", "401", "API"] }` },
+      { id: 2, label: "Knowledge Retrieval", type: "retrieve", color: "#10b981", template: `Given this support classification:\n{{prev_output}}\n\nSearch the knowledge base and return the 3 most relevant articles for category "{{category}}" related to keywords {{keywords}}.\n\nFormat: [ { "id": "...", "title": "...", "relevance": 0-1 } ]`, output: `[ { "id": "kb-441", "title": "401 Auth Errors - Common Causes", "relevance": 0.94 }, { "id": "kb-112", "title": "API Key Rotation Guide", "relevance": 0.87 }, { "id": "kb-208", "title": "OAuth 2.0 Troubleshooting", "relevance": 0.71 } ]` },
+      { id: 3, label: "Draft Response", type: "generate", color: "#f59e0b", template: `You are a support agent for {{product}}. Using these knowledge base articles:\n{{prev_output}}\n\nWrite a helpful, empathetic response to this user message:\n"{{user_message}}"\n\nTone: friendly, concise. Include one specific next step.`, output: `Hi! I can see you're getting 401 errors — this usually means your API key has expired or was rotated.\n\n**Quick fix:** Head to your dashboard → API Keys and generate a new key. Update it in your environment variables and restart your service.\n\nIf the issue persists after that, reply here with your request ID and I'll escalate to engineering. 🔧` },
+      { id: 4, label: "Quality Gate", type: "evaluate", color: "#ef4444", template: `Evaluate this support response for quality:\n\n---\n{{prev_output}}\n---\n\nScore on: empathy (1-5), accuracy (1-5), actionability (1-5), length_appropriate (bool)\n\nIf any score < 3, set "approved": false and add "revision_note".\nRespond with JSON.`, output: `{ "empathy": 5, "accuracy": 4, "actionability": 5, "length_appropriate": true, "approved": true }` }
+    ]
+  },
+  "Blog Post Generator": {
+    variables: { topic: "vector databases", audience: "senior engineers", tone: "technical but accessible" },
+    nodes: [
+      { id: 1, label: "Outline Generator", type: "classify", color: "#6366f1", template: `Create a detailed blog post outline for:\nTopic: {{topic}}\nAudience: {{audience}}\nTone: {{tone}}\n\nInclude: title, 5 H2 sections with 2-3 bullet points each, and a conclusion hook.`, output: `Title: "Vector Databases Demystified: What Senior Engineers Actually Need to Know"\n\n1. Why Traditional Databases Fail at Semantic Search\n   - The curse of dimensionality in relational lookups\n   - Why LIKE queries can't capture meaning\n2. How Embedding Models Create the Representation Space\n   ...` },
+      { id: 2, label: "Section Writer", type: "generate", color: "#10b981", template: `Write Section 1 of the blog post based on this outline:\n{{prev_output}}\n\nAudience: {{audience}}. Write 300 words, include a concrete code example, and end with a transition to the next section.`, output: `## Why Traditional Databases Fail at Semantic Search\n\nImagine you're building a code search tool. A developer types "handle authentication error" — but your codebase uses \`catch_auth_exception\`. A SQL LIKE '%authentication%' query returns nothing...\n\n\`\`\`sql\n-- This finds exact strings. Meaning? Not a chance.\nSELECT * FROM snippets WHERE content LIKE '%authentication error%';\n\`\`\`` },
+      { id: 3, label: "SEO Optimizer", type: "evaluate", color: "#f59e0b", template: `Optimize this blog section for SEO without sacrificing quality:\n{{prev_output}}\n\nTarget keyword: "{{topic}}"\nReturn: { "optimized_text": "...", "keyword_density": 0.0, "added_terms": [...] }`, output: `{ "keyword_density": 0.021, "added_terms": ["approximate nearest neighbor", "embedding space", "semantic similarity"], "optimized_text": "## Why Traditional Databases Fail at Semantic Search\\n\\nVector databases solve the core limitation..." }` }
+    ]
+  }
+};
+
+const NODE_ICONS = { classify: "⚡", retrieve: "🔍", generate: "✨", evaluate: "🎯" };
+const NODE_LABELS = { classify: "Classify/Route", retrieve: "Retrieve/Search", generate: "Generate/Transform", evaluate: "Evaluate/Gate" };
+
+export default function App() {
+  const [preset, setPreset] = useState("Customer Support Triage");
+  const [nodes, setNodes] = useState(PRESETS["Customer Support Triage"].nodes);
+  const [variables, setVariables] = useState(PRESETS["Customer Support Triage"].variables);
+  const [selected, setSelected] = useState(1);
+  const [running, setRunning] = useState(false);
+  const [executedUpTo, setExecutedUpTo] = useState(0);
+  const [varKey, setVarKey] = useState("");
+  const [varVal, setVarVal] = useState("");
+
+  const loadPreset = (name) => {
+    setPreset(name);
+    setNodes(PRESETS[name].nodes);
+    setVariables(PRESETS[name].variables);
+    setSelected(PRESETS[name].nodes[0].id);
+    setExecutedUpTo(0);
+  };
+
+  const runChain = async () => {
+    setRunning(true);
+    setExecutedUpTo(0);
+    for (let i = 0; i < nodes.length; i++) {
+      await new Promise(r => setTimeout(r, 900 + Math.random() * 400));
+      setExecutedUpTo(i + 1);
+    }
+    setRunning(false);
+  };
+
+  const selectedNode = nodes.find(n => n.id === selected);
+
+  const updateNodeTemplate = (val) => {
+    setNodes(nodes.map(n => n.id === selected ? { ...n, template: val } : n));
+  };
+
+  const interpolated = (tpl) => {
+    if (!tpl) return "";
+    let s = tpl;
+    Object.entries(variables).forEach(([k, v]) => { s = s.replaceAll(`{{${k}}}`, `<span style="color:#fbbf24;font-weight:600">${v}</span>`); });
+    s = s.replace(/\{\{(\w+)\}\}/g, '<span style="color:#f87171">{{$1}}</span>');
+    return s;
+  };
+
+  const addVariable = () => {
+    if (varKey.trim()) {
+      setVariables({ ...variables, [varKey.trim()]: varVal });
+      setVarKey(""); setVarVal("");
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{ background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)", borderBottom: "1px solid #2d3748", padding: "12px 20px", display: "flex", alignItems: "center", gap: 16 }}>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#a5b4fc" }}>⛓ Prompt Chain Builder</div>
+          <div style={{ fontSize: 11, color: "#64748b", marginTop: 1 }}>Design, visualize, and simulate multi-step prompt pipelines</div>
+        </div>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: "#64748b" }}>Preset:</span>
+          {Object.keys(PRESETS).map(p => (
+            <button key={p} onClick={() => loadPreset(p)} style={{ padding: "5px 12px", borderRadius: 6, border: "1px solid", fontSize: 12, fontWeight: 600, borderColor: preset === p ? "#6366f1" : "#2d3748", background: preset === p ? "#312e81" : "transparent", color: preset === p ? "#a5b4fc" : "#94a3b8", transition: "all 0.2s" }}>{p}</button>
+          ))}
+          <button onClick={runChain} disabled={running} style={{ padding: "6px 18px", borderRadius: 6, border: "none", background: running ? "#374151" : "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "white", fontWeight: 700, fontSize: 13, marginLeft: 8, opacity: running ? 0.7 : 1 }}>
+            {running ? "⟳ Running..." : "▶ Run Chain"}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "260px 1fr 380px", flex: 1, overflow: "hidden" }}>
+        {/* Left: Chain */}
+        <div style={{ background: "#0f0f1a", borderRight: "1px solid #1e2a3a", overflowY: "auto", padding: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 }}>Pipeline Nodes</div>
+          {nodes.map((node, i) => {
+            const done = executedUpTo > i;
+            const active = running && executedUpTo === i;
+            const sel = selected === node.id;
+            return (
+              <div key={node.id}>
+                <div onClick={() => setSelected(node.id)} style={{ padding: "10px 12px", borderRadius: 8, border: `1px solid ${sel ? node.color : "#1e2a3a"}`, background: sel ? `${node.color}15` : "#13131f", cursor: "pointer", marginBottom: 4, transition: "all 0.2s", position: "relative", overflow: "hidden" }}>
+                  {active && <div style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", background: `${node.color}10`, animation: "pulse 1s infinite" }} />}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ width: 28, height: 28, borderRadius: 6, background: `${node.color}20`, border: `1px solid ${node.color}40`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>{NODE_ICONS[node.type]}</div>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: sel ? "#e2e8f0" : "#94a3b8" }}>{node.label}</div>
+                      <div style={{ fontSize: 10, color: node.color, marginTop: 1 }}>{NODE_LABELS[node.type]}</div>
+                    </div>
+                    {done && <span style={{ marginLeft: "auto", color: "#10b981", fontSize: 16 }}>✓</span>}
+                    {active && <span style={{ marginLeft: "auto", color: "#fbbf24", fontSize: 12 }}>●</span>}
+                  </div>
+                </div>
+                {i < nodes.length - 1 && (
+                  <div style={{ display: "flex", justifyContent: "center", margin: "2px 0" }}>
+                    <div style={{ width: 1, height: 16, background: done ? "#10b981" : "#2d3748" }} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          <div style={{ marginTop: 24, borderTop: "1px solid #1e2a3a", paddingTop: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>Variables</div>
+            {Object.entries(variables).map(([k, v]) => (
+              <div key={k} style={{ display: "flex", gap: 4, marginBottom: 5, alignItems: "center" }}>
+                <div style={{ fontSize: 11, color: "#fbbf24", fontFamily: "monospace", minWidth: 80 }}>{`{{${k}}}`}</div>
+                <input value={v} onChange={e => setVariables({ ...variables, [k]: e.target.value })} style={{ flex: 1, padding: "3px 6px", fontSize: 11, borderRadius: 4 }} />
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 4, marginTop: 8 }}>
+              <input value={varKey} onChange={e => setVarKey(e.target.value)} placeholder="key" style={{ width: 80, padding: "4px 6px", fontSize: 11, borderRadius: 4 }} />
+              <input value={varVal} onChange={e => setVarVal(e.target.value)} placeholder="value" style={{ flex: 1, padding: "4px 6px", fontSize: 11, borderRadius: 4 }} />
+              <button onClick={addVariable} style={{ padding: "4px 8px", background: "#312e81", border: "1px solid #6366f1", color: "#a5b4fc", borderRadius: 4, fontSize: 11 }}>+</button>
+            </div>
+          </div>
+        </div>
+
+        {/* Center: Editor */}
+        <div style={{ background: "#0d0d14", overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
+          {selectedNode && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 8, background: `${selectedNode.color}20`, border: `1px solid ${selectedNode.color}50`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>{NODE_ICONS[selectedNode.type]}</div>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 700 }}>{selectedNode.label}</div>
+                  <div style={{ fontSize: 12, color: selectedNode.color }}>{NODE_LABELS[selectedNode.type]}</div>
+                </div>
+              </div>
+
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.8 }}>Prompt Template</div>
+                <textarea value={selectedNode.template} onChange={e => updateNodeTemplate(e.target.value)} style={{ width: "100%", height: 220, padding: 12, lineHeight: 1.6, resize: "vertical" }} />
+              </div>
+
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.8 }}>Live Preview <span style={{ color: "#374151", fontSize: 10 }}>(variables interpolated)</span></div>
+                <div style={{ background: "#0a0a14", border: "1px solid #1e2a3a", borderRadius: 6, padding: 12, fontSize: 13, lineHeight: 1.7, fontFamily: "Consolas, monospace", whiteSpace: "pre-wrap", minHeight: 120, maxHeight: 220, overflowY: "auto" }} dangerouslySetInnerHTML={{ __html: interpolated(selectedNode.template) }} />
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div style={{ background: "#0a0a14", border: "1px solid #1e2a3a", borderRadius: 6, padding: 12 }}>
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6, fontWeight: 600 }}>TOKENS (EST.)</div>
+                  <div style={{ fontSize: 24, fontWeight: 700, color: "#a5b4fc" }}>{Math.ceil(selectedNode.template.length / 4)}</div>
+                  <div style={{ fontSize: 10, color: "#374151" }}>~${(selectedNode.template.length / 4 * 0.00003).toFixed(4)} GPT-4o</div>
+                </div>
+                <div style={{ background: "#0a0a14", border: "1px solid #1e2a3a", borderRadius: 6, padding: 12 }}>
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6, fontWeight: 600 }}>VARIABLES USED</div>
+                  <div style={{ fontSize: 24, fontWeight: 700, color: "#10b981" }}>{[...(selectedNode.template.matchAll(/\{\{(\w+)\}\}/g))].length}</div>
+                  <div style={{ fontSize: 10, color: "#374151" }}>{[...new Set([...(selectedNode.template.matchAll(/\{\{(\w+)\}\}/g))].map(m => m[1]))].join(", ") || "none"}</div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Right: Output */}
+        <div style={{ background: "#0a0a14", borderLeft: "1px solid #1e2a3a", overflowY: "auto", padding: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 }}>Execution Output</div>
+          {nodes.map((node, i) => {
+            const done = executedUpTo > i;
+            const active = running && executedUpTo === i;
+            return (
+              <div key={node.id} style={{ marginBottom: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: done ? "#10b981" : active ? "#fbbf24" : "#374151" }} />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: done ? "#e2e8f0" : "#4a5568" }}>Step {i + 1}: {node.label}</span>
+                </div>
+                {done ? (
+                  <div style={{ background: "#0f1a0f", border: "1px solid #14532d", borderRadius: 6, padding: 10, fontSize: 12, lineHeight: 1.6, fontFamily: "Consolas, monospace", color: "#86efac", whiteSpace: "pre-wrap", maxHeight: 160, overflowY: "auto" }}>
+                    {node.output}
+                  </div>
+                ) : active ? (
+                  <div style={{ background: "#1a1505", border: "1px solid #713f12", borderRadius: 6, padding: 10, fontSize: 12, color: "#fbbf24", fontStyle: "italic" }}>
+                    Processing...
+                  </div>
+                ) : (
+                  <div style={{ background: "#0f0f1a", border: "1px solid #1e2a3a", borderRadius: 6, padding: 10, fontSize: 12, color: "#374151" }}>
+                    Awaiting execution
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {executedUpTo === nodes.length && !running && (
+            <div style={{ background: "#0f1a0f", border: "1px solid #166534", borderRadius: 8, padding: 12, marginTop: 8 }}>
+              <div style={{ color: "#4ade80", fontWeight: 700, fontSize: 13, marginBottom: 4 }}>✓ Chain Complete</div>
+              <div style={{ fontSize: 11, color: "#86efac" }}>All {nodes.length} nodes executed successfully. Total estimated cost: ~${nodes.reduce((s, n) => s + n.template.length / 4 * 0.00003, 0).toFixed(4)}</div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

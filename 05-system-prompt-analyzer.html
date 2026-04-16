@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>System Prompt Analyzer — AI Portfolio</title>
+<script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #080b10; color: #e2e8f0; min-height: 100vh; }
+  ::-webkit-scrollbar { width: 5px; } ::-webkit-scrollbar-track { background: #0d1117; } ::-webkit-scrollbar-thumb { background: #2d3748; border-radius: 3px; }
+  textarea { background: #0d1117; color: #e2e8f0; border: 1px solid #2d3748; border-radius: 8px; font-family: 'Consolas', monospace; font-size: 13px; line-height: 1.7; resize: none; width: 100%; }
+  textarea:focus { outline: none; border-color: #6366f1; }
+  @keyframes scoreIn { from{opacity:0;transform:scale(0.9)} to{opacity:1;transform:scale(1)} }
+  @keyframes slideRight { from{width:0} to{width:var(--final)} }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useEffect } = React;
+
+const EXAMPLES = {
+  "Customer Support Bot": `You are a helpful customer support assistant for CloudBase, a developer infrastructure company.
+
+Your primary goal is to help users resolve technical issues quickly and professionally.
+
+Guidelines:
+- Always greet users warmly and ask clarifying questions when needed
+- Focus on resolving the technical issue at hand
+- If you cannot solve a problem, escalate to a human agent by saying "Let me connect you with our support team"
+- Do not discuss competitor products
+- Keep responses concise and actionable
+- Use the customer's name if provided
+
+You have access to the following tools: search_knowledge_base, create_ticket, check_account_status`,
+
+  "Medical Information Assistant": `You are MedInfo, an AI assistant that provides general health information.
+
+IMPORTANT DISCLAIMERS:
+- You are NOT a doctor and cannot provide medical diagnoses
+- Always recommend consulting a healthcare professional for medical decisions
+- In emergencies, always direct users to call emergency services (911)
+
+Capabilities:
+- Explain medical terms and conditions in plain language
+- Provide general wellness information
+- Help users prepare questions for their doctor
+- Summarize publicly available medical literature
+
+Restrictions:
+- Never diagnose conditions
+- Never recommend specific medications or dosages
+- Never advise stopping prescribed medications
+- Do not provide information that could enable self-harm
+
+Format: Use clear headings, bullet points for lists, and bold for important warnings. Keep responses under 400 words unless asked for detail.`,
+
+  "Minimal / Weak Prompt": `You are an AI assistant. Be helpful and answer questions. Don't say harmful things.`,
+
+  "Code Review Agent": `You are CodeSage, an expert code reviewer specializing in production-grade software quality.
+
+PERSONA: Senior Staff Engineer with 15+ years of experience across systems programming, web services, and ML infrastructure.
+
+REVIEW FRAMEWORK:
+When reviewing code, always evaluate across these dimensions:
+1. Correctness: Does the logic achieve the stated intent? Are edge cases handled?
+2. Security: SQL injection, XSS, auth bypass, secret exposure, dependency vulnerabilities
+3. Performance: Time/space complexity, N+1 queries, unnecessary allocations, blocking I/O
+4. Maintainability: Naming clarity, function size, DRY principle, test coverage
+5. Idiomatic style: Language conventions, framework best practices
+
+OUTPUT FORMAT:
+- Start with a 2-sentence summary of overall quality
+- Use severity labels: 🔴 Critical | 🟠 Major | 🟡 Minor | 💡 Suggestion
+- Group findings by dimension
+- End with a "Verdict": Approve / Request Changes / Block
+
+CONSTRAINTS:
+- Never approve code with Critical security issues
+- If the diff is > 500 lines, ask for clarification on scope
+- Don't nitpick style unless it creates maintenance burden
+- Cite specific line numbers when possible`
+};
+
+const DIMENSIONS = [
+  { key: "persona", label: "Persona & Role", icon: "🎭", desc: "Clear identity, expertise level, named role", checks: ["defines role/identity", "specifies expertise or persona", "gives AI a name or character"], weight: 1.0 },
+  { key: "task", label: "Task Clarity", icon: "🎯", desc: "Specific goals and primary function defined", checks: ["states primary purpose", "lists specific capabilities", "defines scope of work"], weight: 1.2 },
+  { key: "constraints", label: "Constraints", icon: "🚧", desc: "Clear restrictions and refusal rules", checks: ["explicit restrictions/don'ts", "escalation paths defined", "edge case handling"], weight: 1.3 },
+  { key: "safety", label: "Safety Guardrails", icon: "🛡️", desc: "Harm prevention, disclaimers, emergency handling", checks: ["includes safety disclaimers", "handles sensitive topics", "emergency escalation"], weight: 1.4 },
+  { key: "format", label: "Output Format", icon: "📐", desc: "Response structure and length guidance", checks: ["specifies format (bullets, headers, etc)", "defines length expectations", "examples of good output"], weight: 0.9 },
+  { key: "tools", label: "Tool Definition", icon: "🔧", desc: "Available tools and when to use them", checks: ["lists available tools", "specifies tool usage conditions", "defines tool call format"], weight: 0.8 }
+];
+
+function detectDimension(text, dim) {
+  const lower = text.toLowerCase();
+  const scores = dim.checks.map(check => {
+    const words = check.split(/\s+/);
+    return words.some(w => lower.includes(w.replace(/[^a-z]/g, '')));
+  });
+  return scores.filter(Boolean).length / dim.checks.length;
+}
+
+function analyzePrompt(text) {
+  if (!text.trim()) return null;
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  const lineCount = text.split("\n").length;
+  const hasHeaders = (text.match(/^[A-Z][A-Z\s]{2,}:/gm) || []).length;
+  const hasBullets = (text.match(/^[\-\*•]/gm) || []).length;
+  const hasNumbers = (text.match(/^\d+\./gm) || []).length;
+
+  const dimScores = DIMENSIONS.map(d => ({
+    ...d,
+    raw: detectDimension(text, d),
+    score: Math.min(100, Math.round(detectDimension(text, d) * 100))
+  }));
+
+  const weightedAvg = dimScores.reduce((a, d) => a + d.raw * d.weight, 0) / dimScores.reduce((a, d) => a + d.weight, 0);
+  const overall = Math.round(weightedAvg * 100);
+
+  // Boost for word count
+  const lengthBonus = wordCount < 20 ? -25 : wordCount < 50 ? -10 : wordCount > 100 ? 5 : 0;
+  const finalScore = Math.max(0, Math.min(100, overall + lengthBonus));
+
+  // Issues & suggestions
+  const issues = [];
+  const suggestions = [];
+
+  if (wordCount < 30) issues.push({ level: "critical", text: "Prompt is too short to provide meaningful guidance to the model" });
+  if (!text.toLowerCase().includes("you are") && !text.toLowerCase().includes("your role")) issues.push({ level: "major", text: "No explicit role/persona definition — models perform better with clear identity" });
+  if (dimScores.find(d => d.key === "safety").raw < 0.3) issues.push({ level: "major", text: "Missing safety guardrails — add handling for harmful requests and edge cases" });
+  if (dimScores.find(d => d.key === "constraints").raw < 0.2) issues.push({ level: "major", text: "No explicit restrictions defined — LLMs can drift without clear don'ts" });
+  if (dimScores.find(d => d.key === "format").raw < 0.2) issues.push({ level: "minor", text: "No output format guidance — specify structure (bullets, length, headers) for consistency" });
+  if (!hasHeaders && wordCount > 60) suggestions.push("Add section headers (e.g. 'GUIDELINES:', 'RESTRICTIONS:') to improve structure and model parsing");
+  if (!hasBullets && !hasNumbers) suggestions.push("Use bullet points or numbered lists for multiple rules — easier for the model to follow");
+  if (dimScores.find(d => d.key === "tools").raw < 0.1 && !text.toLowerCase().includes("tool")) suggestions.push("If this prompt uses tools/functions, explicitly list them and when to use each");
+  if (wordCount > 800) suggestions.push("Prompt may be overly long — consider splitting into a system prompt + tool definitions");
+
+  const grade = finalScore >= 85 ? "A" : finalScore >= 70 ? "B" : finalScore >= 55 ? "C" : finalScore >= 40 ? "D" : "F";
+  const gradeColor = finalScore >= 85 ? "#4ade80" : finalScore >= 70 ? "#a3e635" : finalScore >= 55 ? "#fbbf24" : finalScore >= 40 ? "#fb923c" : "#f87171";
+
+  return { finalScore, grade, gradeColor, dimScores, wordCount, lineCount, hasHeaders, hasBullets, issues, suggestions };
+}
+
+function ScoreGauge({ score, color }) {
+  const r = 40, cx = 50, cy = 50;
+  const circ = 2 * Math.PI * r;
+  const stroke = circ * (1 - score / 100) * 0.75;
+  const rotation = -135;
+  return (
+    <svg viewBox="0 0 100 70" width="120" height="84">
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="#1e2a3a" strokeWidth="8" strokeDasharray={`${circ * 0.75} ${circ * 0.25}`} strokeLinecap="round" transform={`rotate(${rotation} ${cx} ${cy})`} />
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke={color} strokeWidth="8" strokeDasharray={`${circ * 0.75 * score / 100} ${circ}`} strokeLinecap="round" transform={`rotate(${rotation} ${cx} ${cy})`} style={{ transition: "stroke-dasharray 0.8s ease" }} />
+      <text x={cx} y={cy - 2} textAnchor="middle" fontSize="18" fontWeight="800" fill={color}>{score}</text>
+      <text x={cx} y={cy + 12} textAnchor="middle" fontSize="8" fill="#475569">/ 100</text>
+    </svg>
+  );
+}
+
+export default function App() {
+  const [text, setText] = useState(EXAMPLES["Customer Support Bot"]);
+  const [activeExample, setActiveExample] = useState("Customer Support Bot");
+  const [activeTab, setActiveTab] = useState("analysis");
+
+  const analysis = useMemo(() => analyzePrompt(text), [text]);
+
+  const loadExample = (name) => {
+    setActiveExample(name);
+    setText(EXAMPLES[name]);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+      {/* Header */}
+      <div style={{ background: "#080b10", borderBottom: "1px solid #1e2a3a", padding: "10px 20px", display: "flex", alignItems: "center", gap: 14 }}>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#e879f9" }}>🔬 System Prompt Analyzer</div>
+          <div style={{ fontSize: 11, color: "#475569" }}>Real-time quality scoring across 6 dimensions — built for AI systems designers</div>
+        </div>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
+          <span style={{ fontSize: 11, color: "#475569" }}>Load example:</span>
+          {Object.keys(EXAMPLES).map(e => (
+            <button key={e} onClick={() => loadExample(e)} style={{ padding: "4px 9px", borderRadius: 5, border: "1px solid", fontSize: 11, borderColor: activeExample === e ? "#d946ef" : "#1e2a3a", background: activeExample === e ? "#1a0520" : "transparent", color: activeExample === e ? "#f0abfc" : "#475569" }}>{e}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 380px", overflow: "hidden" }}>
+        {/* Left: editor */}
+        <div style={{ display: "flex", flexDirection: "column", padding: 16, overflow: "hidden", gap: 10 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#475569", textTransform: "uppercase", letterSpacing: 0.5 }}>System Prompt</span>
+            {analysis && (
+              <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+                <span style={{ fontSize: 11, color: "#334155" }}>{analysis.wordCount} words</span>
+                <span style={{ fontSize: 11, color: "#334155" }}>·</span>
+                <span style={{ fontSize: 11, color: "#334155" }}>{analysis.lineCount} lines</span>
+                {analysis.hasHeaders > 0 && <span style={{ fontSize: 10, background: "#1a1535", color: "#a5b4fc", padding: "1px 5px", borderRadius: 3 }}>✓ structured</span>}
+              </div>
+            )}
+          </div>
+          <textarea value={text} onChange={e => setText(e.target.value)} style={{ flex: 1, padding: 14 }} placeholder="Paste your system prompt here..." />
+          <div style={{ fontSize: 10, color: "#334155", textAlign: "right" }}>Edit the prompt above to see the analysis update in real time →</div>
+        </div>
+
+        {/* Right: analysis */}
+        <div style={{ background: "#0a0b14", borderLeft: "1px solid #1e2a3a", overflowY: "auto", display: "flex", flexDirection: "column" }}>
+          {/* Tab bar */}
+          <div style={{ display: "flex", borderBottom: "1px solid #1e2a3a" }}>
+            {["analysis", "issues", "suggestions"].map(t => (
+              <button key={t} onClick={() => setActiveTab(t)} style={{ flex: 1, padding: "10px 0", fontSize: 12, fontWeight: 600, border: "none", background: "transparent", color: activeTab === t ? "#e879f9" : "#334155", borderBottom: `2px solid ${activeTab === t ? "#e879f9" : "transparent"}`, textTransform: "capitalize", cursor: "pointer" }}>{t}</button>
+            ))}
+          </div>
+
+          {!analysis ? (
+            <div style={{ padding: 20, textAlign: "center", color: "#334155", marginTop: 40 }}>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>🔬</div>
+              <div>Enter a system prompt to analyze</div>
+            </div>
+          ) : activeTab === "analysis" ? (
+            <div style={{ padding: 16 }}>
+              {/* Score */}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, background: "#0f0b18", borderRadius: 10, padding: 14, border: "1px solid #2d1a3a" }}>
+                <ScoreGauge score={analysis.finalScore} color={analysis.gradeColor} />
+                <div>
+                  <div style={{ fontSize: 11, color: "#475569", marginBottom: 2 }}>Overall Score</div>
+                  <div style={{ fontSize: 36, fontWeight: 900, color: analysis.gradeColor, lineHeight: 1 }}>{analysis.grade}</div>
+                  <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
+                    {analysis.finalScore >= 85 ? "Production ready" : analysis.finalScore >= 70 ? "Good — minor fixes" : analysis.finalScore >= 55 ? "Needs improvement" : analysis.finalScore >= 40 ? "Significant gaps" : "Not production ready"}
+                  </div>
+                </div>
+              </div>
+
+              {/* Dimension breakdown */}
+              {analysis.dimScores.map(d => (
+                <div key={d.key} style={{ marginBottom: 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                    <span style={{ fontSize: 14 }}>{d.icon}</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0" }}>{d.label}</span>
+                    <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: d.score >= 70 ? "#4ade80" : d.score >= 40 ? "#fbbf24" : "#f87171" }}>{d.score}/100</span>
+                  </div>
+                  <div style={{ height: 6, background: "#1e2a3a", borderRadius: 3, marginBottom: 3 }}>
+                    <div style={{ height: "100%", width: `${d.score}%`, borderRadius: 3, background: d.score >= 70 ? "#10b981" : d.score >= 40 ? "#f59e0b" : "#ef4444", transition: "width 0.6s ease" }} />
+                  </div>
+                  <div style={{ fontSize: 10, color: "#334155" }}>{d.desc}</div>
+                  <div style={{ marginTop: 4, display: "flex", gap: 4, flexWrap: "wrap" }}>
+                    {d.checks.map((check, i) => {
+                      const has = d.raw >= (i + 1) / d.checks.length * 0.99;
+                      return <span key={i} style={{ fontSize: 9, padding: "1px 5px", borderRadius: 2, background: has ? "#14532d" : "#1e2a3a", color: has ? "#4ade80" : "#374151" }}>{check}</span>;
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : activeTab === "issues" ? (
+            <div style={{ padding: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "#475569", marginBottom: 10, textTransform: "uppercase", letterSpacing: 0.5 }}>Issues Found ({analysis.issues.length})</div>
+              {analysis.issues.length === 0 ? (
+                <div style={{ textAlign: "center", color: "#4ade80", padding: 20 }}>
+                  <div style={{ fontSize: 24, marginBottom: 8 }}>✓</div>
+                  <div style={{ fontSize: 13 }}>No critical issues detected</div>
+                </div>
+              ) : analysis.issues.map((issue, i) => (
+                <div key={i} style={{ background: "#0a0b14", border: `1px solid ${issue.level === "critical" ? "#7f1d1d" : issue.level === "major" ? "#713f12" : "#1e3a2a"}`, borderRadius: 8, padding: "10px 12px", marginBottom: 8 }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3, background: issue.level === "critical" ? "#7f1d1d" : issue.level === "major" ? "#713f12" : "#064e3b", color: issue.level === "critical" ? "#f87171" : issue.level === "major" ? "#fbbf24" : "#4ade80" }}>{issue.level.toUpperCase()}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.6 }}>{issue.text}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ padding: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "#475569", marginBottom: 10, textTransform: "uppercase", letterSpacing: 0.5 }}>Improvement Suggestions</div>
+              {analysis.suggestions.length === 0 ? (
+                <div style={{ textAlign: "center", color: "#4ade80", padding: 20 }}>
+                  <div style={{ fontSize: 24, marginBottom: 8 }}>🌟</div>
+                  <div style={{ fontSize: 13 }}>Well-structured prompt — no suggestions</div>
+                </div>
+              ) : analysis.suggestions.map((s, i) => (
+                <div key={i} style={{ background: "#0a0b14", border: "1px solid #1e2a3a", borderLeft: "3px solid #8b5cf6", borderRadius: 8, padding: "10px 12px", marginBottom: 8 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                    <span style={{ color: "#8b5cf6", fontSize: 14, flexShrink: 0 }}>💡</span>
+                    <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.6 }}>{s}</div>
+                  </div>
+                </div>
+              ))}
+
+              {/* Best practices */}
+              <div style={{ marginTop: 16, background: "#0f0b18", border: "1px solid #2d1a3a", borderRadius: 8, padding: 12 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#e879f9", marginBottom: 8 }}>📖 Best Practices Checklist</div>
+                {[
+                  ["Define a clear persona", analysis.dimScores.find(d => d.key === "persona")?.score > 40],
+                  ["List specific capabilities", analysis.dimScores.find(d => d.key === "task")?.score > 40],
+                  ["Add explicit restrictions", analysis.dimScores.find(d => d.key === "constraints")?.score > 40],
+                  ["Include safety guardrails", analysis.dimScores.find(d => d.key === "safety")?.score > 40],
+                  ["Specify output format", analysis.dimScores.find(d => d.key === "format")?.score > 30],
+                  ["Use structured sections", analysis.hasHeaders > 0],
+                  ["Keep under 600 words", analysis.wordCount <= 600]
+                ].map(([label, done]) => (
+                  <div key={label} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 5 }}>
+                    <span style={{ color: done ? "#4ade80" : "#374151", fontSize: 13 }}>{done ? "✓" : "○"}</span>
+                    <span style={{ fontSize: 11, color: done ? "#6ee7b7" : "#4a5568" }}>{label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

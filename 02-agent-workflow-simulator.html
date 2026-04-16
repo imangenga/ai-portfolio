@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Agent Workflow Simulator — AI Portfolio</title>
+<script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #060912; color: #e2e8f0; min-height: 100vh; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #0f1117; } ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const SCENARIOS = {
+  "Research Assistant": {
+    query: "What's the latest on GPT-5 capabilities and how does it compare to Claude 3.5?",
+    steps: [
+      { phase: "plan", icon: "🧠", label: "Planning", tool: null, thinking: "The user wants a comparison of GPT-5 and Claude 3.5. I need to: 1) search for recent GPT-5 announcements, 2) search for Claude 3.5 benchmarks, 3) synthesize a comparison. I'll use web_search twice, then reason_and_respond.", output: null, duration: 1200 },
+      { phase: "tool_call", icon: "🔍", label: "Tool Call: web_search", tool: "web_search", thinking: 'Calling web_search with query: "GPT-5 capabilities announcement 2024 benchmarks"', output: '{ "results": [ { "title": "OpenAI GPT-5: What We Know", "snippet": "GPT-5 shows significant improvements in reasoning, multimodal tasks, and long-context understanding, scoring 95.4% on MMLU..." }, { "title": "GPT-5 vs Previous Models", "snippet": "In internal evals, GPT-5 outperforms GPT-4 by 24% on coding tasks and shows near-human performance on MATH benchmark..." } ] }', duration: 900 },
+      { phase: "tool_call", icon: "🔍", label: "Tool Call: web_search", tool: "web_search", thinking: 'Calling web_search with query: "Claude 3.5 Sonnet benchmark performance comparison"', output: '{ "results": [ { "title": "Claude 3.5 Sonnet Benchmarks", "snippet": "Claude 3.5 Sonnet leads on coding (HumanEval 92%), outperforms GPT-4o on most tasks, with 200K context window..." }, { "title": "Anthropic Model Card Claude 3.5", "snippet": "Claude 3.5 demonstrates superior performance on instruction-following, complex reasoning, and nuanced writing tasks..." } ] }', duration: 900 },
+      { phase: "tool_call", icon: "🧮", label: "Tool Call: reason_structured", tool: "reason_structured", thinking: "I now have data on both models. Let me structure a comparison across key dimensions: reasoning, coding, context, multimodal, safety.", output: '{ "comparison_axes": ["reasoning", "coding", "context_length", "multimodal", "safety_alignment"], "gpt5_scores": [96, 95, 88, 97, 85], "claude35_scores": [94, 92, 99, 89, 97] }', duration: 700 },
+      { phase: "respond", icon: "✍️", label: "Synthesizing Response", tool: null, thinking: "I have structured comparison data. Now I'll write a balanced, accurate comparison response referencing both sources.", output: "**GPT-5 vs Claude 3.5 Sonnet — Key Differences**\n\nBoth are frontier models, but they excel in different areas:\n\n🧠 **Reasoning**: GPT-5 leads slightly (96 vs 94 on MMLU-style tasks), particularly in multi-step math.\n\n💻 **Coding**: GPT-5 edges ahead on HumanEval (95% vs 92%), but Claude 3.5 shows stronger instruction-following in complex refactors.\n\n📄 **Context**: Claude 3.5 wins significantly — 200K tokens vs GPT-5's 128K window.\n\n🖼 **Multimodal**: GPT-5 has stronger vision capabilities based on current evals.\n\n🛡 **Safety**: Claude 3.5 demonstrates stronger alignment and refusal calibration in red-team evaluations.\n\n**Bottom line**: GPT-5 for raw benchmark performance; Claude 3.5 for long-document workflows and safety-critical applications.", duration: 1400 }
+    ]
+  },
+  "Code Debugging Agent": {
+    query: "My Python function returns wrong results for negative numbers. Here's the code: `def factorial(n): return n * factorial(n-1) if n > 0 else 1`",
+    steps: [
+      { phase: "plan", icon: "🧠", label: "Planning", tool: null, thinking: "User has a factorial function. Let me first analyze the code statically, then run it to observe behavior, then identify the bug, then propose a fix.", output: null, duration: 1000 },
+      { phase: "tool_call", icon: "🔬", label: "Tool Call: code_analysis", tool: "code_analysis", thinking: 'Running static analysis on: def factorial(n): return n * factorial(n-1) if n > 0 else 1', output: '{ "issues": [ { "type": "missing_guard", "line": 1, "message": "No guard for negative inputs — negative n will recurse n > 0 is never true so returns 1 immediately... wait, n=0 returns 1 correctly, but n=-1 also returns 1. The function is technically wrong for negatives per mathematical definition.", "severity": "logic_error" } ], "complexity": "O(n)", "recursion_depth": "n" }', duration: 800 },
+      { phase: "tool_call", icon: "▶️", label: "Tool Call: code_execute", tool: "code_execute", thinking: "Let me run factorial(-3) and factorial(-1) to confirm the observed behavior.", output: '{ "tests": [ { "input": "factorial(-3)", "output": "1", "expected": "ValueError" }, { "input": "factorial(0)", "output": "1", "expected": "1", "pass": true }, { "input": "factorial(5)", "output": "120", "expected": "120", "pass": true } ] }', duration: 900 },
+      { phase: "tool_call", icon: "✏️", label: "Tool Call: code_fix", tool: "code_fix", thinking: "The issue: negative inputs silently return 1 instead of raising ValueError. Fix: add explicit guard at top.", output: '{ "fixed_code": "def factorial(n):\\n    if not isinstance(n, int) or n < 0:\\n        raise ValueError(f\'factorial() requires a non-negative integer, got {n}\')\\n    return n * factorial(n - 1) if n > 0 else 1", "changes": ["Added type check", "Added negative guard with descriptive error"], "tests_pass": true }', duration: 700 },
+      { phase: "respond", icon: "✍️", label: "Final Response", tool: null, thinking: "I have the analysis and fix. Now I'll explain the bug clearly and provide the corrected code.", output: "Found the bug! Your function handles negative numbers incorrectly — it silently returns `1` for any negative input instead of raising an error.\n\n**Root cause**: The condition `if n > 0` returns `False` for negatives, so the `else 1` branch fires immediately. Mathematically, `factorial(-3)` is undefined, so it should raise an error.\n\n**Fixed code:**\n```python\ndef factorial(n):\n    if not isinstance(n, int) or n < 0:\n        raise ValueError(f'factorial() requires a non-negative integer, got {n}')\n    return n * factorial(n - 1) if n > 0 else 1\n```\nNow `factorial(-3)` raises `ValueError` with a clear message, while `factorial(5)` still correctly returns `120`.", duration: 1200 }
+    ]
+  },
+  "Data Pipeline Orchestrator": {
+    query: "Process yesterday's sales CSV: clean it, compute daily totals by region, and email the summary to the team.",
+    steps: [
+      { phase: "plan", icon: "🧠", label: "Planning", tool: null, thinking: "Complex multi-step task: 1) fetch the CSV file, 2) run data cleaning, 3) aggregate by region, 4) generate summary, 5) send email. I'll need: file_read, data_transform, sql_aggregate, report_generate, email_send.", output: null, duration: 1100 },
+      { phase: "tool_call", icon: "📂", label: "Tool Call: file_read", tool: "file_read", thinking: 'Reading file: /data/sales/2024-01-14.csv', output: '{ "rows": 2847, "columns": ["order_id","region","product","amount","timestamp","status"], "sample": [{"order_id":"ORD-8821","region":"APAC","product":"Pro Plan","amount":299,"status":"completed"},...], "issues": { "null_rows": 12, "malformed_amounts": 3, "duplicate_ids": 1 } }', duration: 700 },
+      { phase: "tool_call", icon: "🧹", label: "Tool Call: data_clean", tool: "data_clean", thinking: "Cleaning: remove 12 null rows, fix 3 malformed amounts, deduplicate 1 order_id. Result: 2831 clean rows.", output: '{ "rows_before": 2847, "rows_after": 2831, "actions_taken": ["Removed 12 null rows", "Parsed 3 malformed amounts (format: $1,299 → 1299)", "Deduplicated order ORD-4401 (kept latest timestamp)"], "clean_file": "/tmp/sales_clean_2024-01-14.csv" }', duration: 900 },
+      { phase: "tool_call", icon: "📊", label: "Tool Call: sql_aggregate", tool: "sql_aggregate", thinking: 'SELECT region, COUNT(*) as orders, SUM(amount) as revenue, AVG(amount) as avg_order FROM sales_clean WHERE status=\'completed\' GROUP BY region ORDER BY revenue DESC', output: '{ "results": [ { "region": "NA", "orders": 1241, "revenue": 387420, "avg_order": 312.18 }, { "region": "EMEA", "orders": 891, "revenue": 298110, "avg_order": 334.58 }, { "region": "APAC", "orders": 699, "revenue": 201887, "avg_order": 288.82 } ], "total_revenue": 887417, "total_orders": 2831 }', duration: 800 },
+      { phase: "respond", icon: "📧", label: "Tool Call: email_send", tool: "email_send", thinking: "Composing and sending the summary email to the team distribution list.", output: '✅ Email sent to team@company.com\n\nSubject: Daily Sales Summary — Jan 14, 2024\n\n📈 Total Revenue: $887,417 (+12.3% vs previous day)\n📦 Total Orders: 2,831\n\nBy Region:\n• NA: $387,420 (1,241 orders)\n• EMEA: $298,110 (891 orders)  \n• APAC: $201,887 (699 orders)\n\nData quality: 16 records cleaned, all issues resolved.', duration: 600 }
+    ]
+  }
+};
+
+const PHASE_COLORS = { plan: "#8b5cf6", tool_call: "#06b6d4", respond: "#10b981" };
+const TOOL_COLORS = { web_search: "#f59e0b", code_analysis: "#6366f1", code_execute: "#ef4444", code_fix: "#10b981", file_read: "#06b6d4", data_clean: "#8b5cf6", sql_aggregate: "#f59e0b", reason_structured: "#6366f1", email_send: "#10b981" };
+
+function ThinkingBubble({ text, color }) {
+  return (
+    <div style={{ background: "#0f1117", border: `1px solid ${color}30`, borderRadius: 8, padding: "10px 14px", fontSize: 12, lineHeight: 1.7, color: "#94a3b8", fontStyle: "italic", position: "relative" }}>
+      <div style={{ position: "absolute", top: -1, left: 16, background: color, borderRadius: 2, padding: "1px 6px", fontSize: 9, color: "white", fontWeight: 700, fontStyle: "normal", letterSpacing: 0.5 }}>THINKING</div>
+      <div style={{ marginTop: 6 }}>{text}</div>
+    </div>
+  );
+}
+
+function ToolBadge({ tool }) {
+  if (!tool) return null;
+  const color = TOOL_COLORS[tool] || "#64748b";
+  return <span style={{ background: `${color}20`, border: `1px solid ${color}50`, color: color, borderRadius: 4, padding: "2px 8px", fontSize: 11, fontWeight: 700, fontFamily: "monospace" }}>{tool}()</span>;
+}
+
+export default function App() {
+  const [scenario, setScenario] = useState("Research Assistant");
+  const [currentStep, setCurrentStep] = useState(-1);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState(1);
+  const timerRef = useRef(null);
+  const bottomRef = useRef(null);
+
+  const steps = SCENARIOS[scenario].steps;
+
+  const reset = () => { setCurrentStep(-1); setPlaying(false); clearTimeout(timerRef.current); };
+
+  const loadScenario = (s) => { setScenario(s); reset(); };
+
+  useEffect(() => {
+    if (!playing) return;
+    if (currentStep >= steps.length - 1) { setPlaying(false); return; }
+    const next = currentStep + 1;
+    timerRef.current = setTimeout(() => {
+      setCurrentStep(next);
+      if (bottomRef.current) bottomRef.current.scrollIntoView({ behavior: "smooth" });
+    }, steps[next].duration / speed);
+    return () => clearTimeout(timerRef.current);
+  }, [playing, currentStep, steps, speed]);
+
+  const toggle = () => {
+    if (currentStep >= steps.length - 1) { reset(); setTimeout(() => setPlaying(true), 100); }
+    else setPlaying(!playing);
+  };
+
+  const stepForward = () => {
+    if (currentStep < steps.length - 1) setCurrentStep(currentStep + 1);
+  };
+
+  const visibleSteps = steps.slice(0, currentStep + 1);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+      {/* Header */}
+      <div style={{ background: "linear-gradient(135deg, #060912 0%, #0f1117 100%)", borderBottom: "1px solid #1e2a3a", padding: "12px 20px", display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#67e8f9" }}>🤖 Agent Workflow Simulator</div>
+          <div style={{ fontSize: 11, color: "#475569", marginTop: 1 }}>Step through real agentic reasoning — plan → tool calls → response</div>
+        </div>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: "#64748b" }}>Scenario:</span>
+          {Object.keys(SCENARIOS).map(s => (
+            <button key={s} onClick={() => loadScenario(s)} style={{ padding: "5px 10px", borderRadius: 6, border: "1px solid", fontSize: 11, fontWeight: 600, borderColor: scenario === s ? "#06b6d4" : "#1e2a3a", background: scenario === s ? "#0e4f5a" : "transparent", color: scenario === s ? "#67e8f9" : "#64748b" }}>{s}</button>
+          ))}
+          <div style={{ display: "flex", gap: 1, marginLeft: 8, background: "#0f1117", border: "1px solid #1e2a3a", borderRadius: 6, overflow: "hidden" }}>
+            {[0.5, 1, 2].map(s => (
+              <button key={s} onClick={() => setSpeed(s)} style={{ padding: "5px 10px", fontSize: 11, background: speed === s ? "#1e3a4a" : "transparent", color: speed === s ? "#67e8f9" : "#475569", border: "none", fontWeight: speed === s ? 700 : 400 }}>{s}x</button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Query bar */}
+      <div style={{ background: "#0a0e18", borderBottom: "1px solid #1e2a3a", padding: "10px 20px", display: "flex", gap: 10, alignItems: "center", flexShrink: 0 }}>
+        <div style={{ width: 28, height: 28, borderRadius: "50%", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, flexShrink: 0 }}>👤</div>
+        <div style={{ flex: 1, background: "#0f1117", border: "1px solid #2d3748", borderRadius: 8, padding: "8px 14px", fontSize: 13, color: "#e2e8f0", lineHeight: 1.5 }}>
+          {SCENARIOS[scenario].query}
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={toggle} style={{ padding: "7px 16px", borderRadius: 6, border: "none", background: playing ? "#7f1d1d" : "linear-gradient(135deg, #06b6d4, #0891b2)", color: "white", fontWeight: 700, fontSize: 13 }}>
+            {playing ? "⏸ Pause" : currentStep >= steps.length - 1 ? "↺ Replay" : currentStep === -1 ? "▶ Run" : "▶ Resume"}
+          </button>
+          <button onClick={stepForward} disabled={playing || currentStep >= steps.length - 1} style={{ padding: "7px 10px", borderRadius: 6, border: "1px solid #2d3748", background: "transparent", color: "#94a3b8", fontSize: 13, opacity: (playing || currentStep >= steps.length - 1) ? 0.4 : 1 }}>⏭</button>
+          <button onClick={reset} style={{ padding: "7px 10px", borderRadius: 6, border: "1px solid #2d3748", background: "transparent", color: "#94a3b8", fontSize: 13 }}>↺</button>
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      <div style={{ height: 2, background: "#1e2a3a", flexShrink: 0 }}>
+        <div style={{ height: "100%", background: "linear-gradient(90deg, #06b6d4, #8b5cf6)", width: `${currentStep < 0 ? 0 : (currentStep + 1) / steps.length * 100}%`, transition: "width 0.4s ease" }} />
+      </div>
+
+      {/* Steps feed */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px", maxWidth: 860, margin: "0 auto", width: "100%" }}>
+        {currentStep === -1 && (
+          <div style={{ textAlign: "center", marginTop: 60, color: "#334155" }}>
+            <div style={{ fontSize: 48, marginBottom: 16 }}>🤖</div>
+            <div style={{ fontSize: 16, fontWeight: 600 }}>Press Run to watch the agent think</div>
+            <div style={{ fontSize: 13, marginTop: 6 }}>Each step shows the agent's reasoning, tool calls, and observations</div>
+          </div>
+        )}
+        {visibleSteps.map((step, i) => {
+          const color = PHASE_COLORS[step.phase];
+          return (
+            <div key={i} style={{ marginBottom: 20, animation: "fadeIn 0.3s ease" }}>
+              {/* Step header */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <div style={{ width: 28, height: 28, borderRadius: "50%", background: `${color}20`, border: `1px solid ${color}50`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>{step.icon}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color }}>Step {i + 1}: {step.label}</div>
+                {step.tool && <ToolBadge tool={step.tool} />}
+                <div style={{ marginLeft: "auto", fontSize: 10, color: "#334155" }}>{step.duration}ms</div>
+              </div>
+
+              {/* Thinking */}
+              <div style={{ marginLeft: 36 }}>
+                <ThinkingBubble text={step.thinking} color={color} />
+
+                {/* Output */}
+                {step.output && (
+                  <div style={{ marginTop: 8, background: "#070b10", border: `1px solid ${color}30`, borderRadius: 8, padding: "10px 14px" }}>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: color, letterSpacing: 1, marginBottom: 6, textTransform: "uppercase" }}>
+                      {step.tool ? `↩ ${step.tool} response` : "Response"}
+                    </div>
+                    <div style={{ fontSize: 12, lineHeight: 1.7, color: "#cbd5e1", fontFamily: step.output.startsWith("{") || step.output.startsWith("[") ? "Consolas, monospace" : "inherit", whiteSpace: "pre-wrap" }}>
+                      {step.output}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Live indicator */}
+        {playing && currentStep < steps.length - 1 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 36, color: "#94a3b8", fontSize: 13 }}>
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#06b6d4", animation: "blink 1s infinite" }} />
+            Agent thinking...
+          </div>
+        )}
+
+        {/* Completion */}
+        {currentStep === steps.length - 1 && (
+          <div style={{ background: "#030a0d", border: "1px solid #065f46", borderRadius: 10, padding: "14px 16px", marginTop: 12, animation: "fadeIn 0.3s ease" }}>
+            <div style={{ color: "#34d399", fontWeight: 700, marginBottom: 4 }}>✓ Agent task complete</div>
+            <div style={{ fontSize: 12, color: "#6ee7b7" }}>
+              {currentStep + 1} steps · {steps.filter(s => s.tool).length} tool calls · {steps.reduce((a, s) => a + s.duration, 0)}ms simulated latency
+            </div>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Tool legend */}
+      <div style={{ background: "#070b10", borderTop: "1px solid #1e2a3a", padding: "8px 20px", display: "flex", gap: 16, alignItems: "center", flexShrink: 0 }}>
+        <span style={{ fontSize: 10, color: "#334155", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>Phase key:</span>
+        {Object.entries(PHASE_COLORS).map(([p, c]) => (
+          <span key={p} style={{ fontSize: 11, color: c }}>● {p.replace("_", " ")}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
